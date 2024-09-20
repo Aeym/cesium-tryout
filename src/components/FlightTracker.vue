@@ -1,10 +1,8 @@
 <script lang="ts">
+	import { defineComponent } from "vue";
 	import {
 		Cartesian3,
 		Color,
-		createOsmBuildingsAsync,
-		Math as CesiumMath,
-		Terrain,
 		Viewer,
 		JulianDate,
 		SampledPositionProperty,
@@ -13,59 +11,82 @@
 		PathGraphics,
 		IonResource,
 		VelocityOrientationProperty,
-		Ion,
 	} from "cesium";
 	import "cesium/Build/Cesium/Widgets/widgets.css";
-	import { defineComponent } from "vue";
-	import { flightData } from "@/services/flightDataService";
+
+	import { flightData, planeAssetId } from "@/services/flightService";
+	import {
+		createViewer,
+		destroyViewer,
+		calculateEndTime,
+		configureClock,
+	} from "@/services/cesiumUtils";
 
 	export default defineComponent({
+		data() {
+			return {
+				viewer: null as null | Viewer,
+			};
+		},
 		async mounted() {
-			const viewer = new Viewer("cesium-container", {
-				terrain: Terrain.fromWorldTerrain(),
-			});
+			this.viewer = createViewer("cesium-container");
 
-			const timeStepInSeconds = 30;
-			const totalSeconds = timeStepInSeconds * (flightData.length - 1);
 			const start = JulianDate.fromIso8601("2020-03-09T23:10:00Z");
-			const stop = JulianDate.addSeconds(start, totalSeconds, new JulianDate());
-			viewer.clock.startTime = start.clone();
-			viewer.clock.stopTime = stop.clone();
-			viewer.clock.currentTime = start.clone();
-			viewer.timeline.zoomTo(start, stop);
-			viewer.clock.multiplier = 50;
-			viewer.clock.shouldAnimate = true;
+			const stop = calculateEndTime(start, flightData.length, 30);
+			configureClock(this.viewer, start, stop);
 
-			const positionProperty = new SampledPositionProperty();
+			const positionProperty = this.generateFlightPath(start, flightData, 30);
+			await this.loadModel(positionProperty, start, stop);
+		},
+		unmounted() {
+			destroyViewer(this.viewer);
+		},
+		methods: {
+			generateFlightPath(
+				start: JulianDate,
+				flightData: Array<{
+					longitude: number;
+					latitude: number;
+					height: number;
+				}>,
+				timeStepInSeconds: number
+			): SampledPositionProperty {
+				const positionProperty = new SampledPositionProperty();
 
-			for (let i = 0; i < flightData.length; i++) {
-				const dataPoint = flightData[i];
+				flightData.forEach((dataPoint, index) => {
+					const time = JulianDate.addSeconds(
+						start,
+						index * timeStepInSeconds,
+						new JulianDate()
+					);
+					const position = Cartesian3.fromDegrees(
+						dataPoint.longitude,
+						dataPoint.latitude,
+						dataPoint.height
+					);
+					positionProperty.addSample(time, position);
 
-				const time = JulianDate.addSeconds(
-					start,
-					i * timeStepInSeconds,
-					new JulianDate()
-				);
-				const position = Cartesian3.fromDegrees(
-					dataPoint.longitude,
-					dataPoint.latitude,
-					dataPoint.height
-				);
-
-				positionProperty.addSample(time, position);
-
-				viewer.entities.add({
-					description: `Location: (${dataPoint.longitude}, ${dataPoint.latitude}, ${dataPoint.height})`,
-					position: position,
-					point: { pixelSize: 10, color: Color.RED },
+					// Add a point entity to the viewer for each data point
+					this.viewer?.entities.add({
+						description: `Location: (${dataPoint.longitude}, ${dataPoint.latitude}, ${dataPoint.height})`,
+						position: position,
+						point: { pixelSize: 10, color: Color.RED },
+					});
 				});
-			}
 
-			async function loadModel() {
-				const airplaneUri = await IonResource.fromAssetId(2738531);
-				const airplaneEntity = viewer.entities.add({
+				return positionProperty;
+			},
+
+			// Load and add the airplane model to the viewer
+			async loadModel(
+				positionProperty: SampledPositionProperty,
+				start: JulianDate,
+				stop: JulianDate
+			): Promise<void> {
+				const airplaneUri = await IonResource.fromAssetId(planeAssetId);
+				const airplaneEntity = this.viewer?.entities.add({
 					availability: new TimeIntervalCollection([
-						new TimeInterval({ start: start, stop: stop }),
+						new TimeInterval({ start, stop }),
 					]),
 					position: positionProperty,
 					model: { uri: airplaneUri },
@@ -73,23 +94,14 @@
 					path: new PathGraphics({ width: 3 }),
 				});
 
-				viewer.trackedEntity = airplaneEntity;
-			}
-
-			loadModel();
-
-			// Add Cesium OSM Buildings, a global 3D buildings layer.
-			// const buildingTileset = await createOsmBuildingsAsync();
-			// viewer.scene.primitives.add(buildingTileset);
+				if (this.viewer) {
+					this.viewer.trackedEntity = airplaneEntity;
+				}
+			},
 		},
 	});
 </script>
 
-<style scoped>
-	#cesium-container {
-		height: 100%;
-		width: 100%;
-		margin: 0;
-		padding: 0;
-	}
-</style>
+<template>
+	<div id="cesium-container"></div>
+</template>
